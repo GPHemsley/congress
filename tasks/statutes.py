@@ -78,8 +78,10 @@ def proc_statute(path, options):
   for bill in mods.findall( "/mods:relatedItem", mods_ns ):
     titles = []
 
+    title = bill.find( "mods:titleInfo/mods:title", mods_ns ).text.replace( '""', '"' )
+
     titles.append( {
-      "title": bill.find( "mods:titleInfo/mods:title", mods_ns ).text.replace( '""', '"' ),
+      "title": title,
       "as": "enacted",
       "type": "official",
     } )
@@ -91,10 +93,22 @@ def proc_statute(path, options):
     else:
       subject = None
 
+    granule_class = bill.find( "mods:extension/mods:granuleClass", mods_ns ).text
+    access_id = bill.find( "mods:extension/mods:accessId", mods_ns ).text
+    granule_date = bill.find( "mods:extension/mods:granuleDate", mods_ns ).text
+
     # MODS files also contain information about:
-    # ['BACKMATTER', 'FRONTMATTER', 'CONSTAMEND', 'PROCLAMATION', 'REORGPLAN']
-    if bill.find( "mods:extension/mods:granuleClass", mods_ns ).text not in [ "PUBLICLAW", "PRIVATELAW", "HCONRES", "SCONRES" ]:
+    # ['BACKMATTER', 'FRONTMATTER', 'PROCLAMATION', 'REORGPLAN']
+    if granule_class not in [ "PUBLICLAW", "PRIVATELAW", "HCONRES", "SCONRES", "CONSTAMEND" ]:
       continue
+
+    if granule_class == "CONSTAMEND":
+      is_proposed_amendment = bill.find( "mods:extension/mods:isProposedAmendment", mods_ns )
+
+      # Proposal or ratification notice?
+      if ( is_proposed_amendment is None ) or ( is_proposed_amendment == "false" ):
+        logging.error( "Ratified: %s" % title )
+        continue
 
     committees = []
 
@@ -115,16 +129,17 @@ def proc_statute(path, options):
 
     bill_elements = bill.findall( "mods:extension/mods:bill", mods_ns )
 
-    if ( bill_elements is None ) or ( len( bill_elements ) != 1 ):
-      logging.error("Could not get bill data for %s" % repr(titles) )
+    if bill_elements == []:
+      logging.error( "Could not get bill data for %s: %s" % (access_id, title) )
       continue
     else:
+      if len( bill_elements ) > 1:
+        logging.error( "Multiple bills associated with %s" % access_id )
+
       bill_congress = bill_elements[0].attrib["congress"]
       bill_type = bill_elements[0].attrib["type"].lower()
       bill_number = bill_elements[0].attrib["number"]
       bill_id = "%s%s-%s" % (bill_type, bill_number, bill_congress)
-
-    granule_date = bill.find( "mods:extension/mods:granuleDate", mods_ns ).text
 
     actions = []
     sources = []
@@ -132,7 +147,7 @@ def proc_statute(path, options):
     source = {
       "source": "statutes",
       "package_id": package_id,
-      "access_id": bill.find( "mods:extension/mods:accessId", mods_ns ).text,
+      "access_id": access_id,
       "source_url": bill.find( "mods:location/mods:url[@displayLabel='Content Detail']", mods_ns ).text,
       "volume": bill.find( "mods:extension/mods:volume", mods_ns ).text,
       "page": bill.find( "mods:part[@type='article']/mods:extent[@unit='pages']/mods:start", mods_ns ).text,
@@ -143,24 +158,29 @@ def proc_statute(path, options):
 
     law_elements = bill.findall( "mods:extension/mods:law", mods_ns )
 
-    # XXX: If <law> is missing, this assumes it is a concurrent resolution.
-    #      This may be a problem if the code is updated to accept joint resolutions for constitutional amendments.
-    if ( law_elements is None ) or ( len( law_elements ) != 1 ):
-      other_chamber = { "HOUSE": "s", "SENATE": "h" }
+    if law_elements == []:
+      if granule_class in [ "HCONRES", "SCONRES", "CONSTAMEND" ]:
+        other_chamber = { "HOUSE": "s", "SENATE": "h" }
 
-      action = {
-        "type": "vote",
-        "vote_type": "vote2",
-        "where": other_chamber[bill.find( "mods:extension/mods:originChamber", mods_ns ).text],
-        "result": "pass", # XXX
-        "how": "unknown", # XXX
-#        "text": "",
-        "acted_at": granule_date, # XXX
-        "status": "PASSED:CONCURRENTRES",
-        "references": [], # XXX
-#        "sources": sources,
-      }
+        action = {
+          "type": "vote",
+          "vote_type": "vote2",
+          "where": other_chamber[bill.find( "mods:extension/mods:originChamber", mods_ns ).text],
+          "result": "pass", # XXX
+          "how": "unknown", # XXX
+#          "text": "",
+          "acted_at": granule_date, # XXX
+          "status": "PASSED:CONSTAMEND" if ( granule_class == "CONSTAMEND" ) else "PASSED:CONCURRENTRES",
+          "references": [], # XXX
+#          "sources": sources,
+        }
+      else:
+        logging.error( "Could not get law data for %s: %s" % (bill_id, title) )
+        continue
     else:
+      if len( law_elements ) > 1:
+        logging.error( "Multiple laws associated with %s" % bill_id )
+
       law_congress = law_elements[0].attrib["congress"]
       law_number = law_elements[0].attrib["number"]
       law_type = ( "private" if ( law_elements[0].attrib["isPrivate"] == "true" ) else "public" )
