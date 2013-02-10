@@ -28,6 +28,9 @@
 # Starting with the 93rd Congress (1973-1974, corresponding
 # to volume 78 of the Statutes of Large), we have bill
 # data from THOMAS. Be careful not to overwrite those files.
+#
+# Use the --plaintext flag to extract the plaintext from the
+# statute PDFs. (This may slow down processing.)
 
 
 import logging
@@ -62,9 +65,40 @@ def run(options):
 
   utils.process_set(to_fetch, proc_statute, options)
 
+def output_bill_plaintext( bill_version_id, bill_pdf_url ):
+  import subprocess
+
+  try:
+    plaintext = subprocess.check_output( [ "pdftotext", bill_pdf_url, plaintext_output_for( bill_version_id ) ] )
+  except OSError as e:
+    if e.args[0] == 2:
+      logging.error( "pdftotext not available" )
+
+    raise
+  except subprocess.CalledProcessError as e:
+    print e, e.args
+#    logging.error( "Problem executing pdftotext", e.args )
+  else:
+    plaintext = ""
+
+  return plaintext
+
+#def output_bill_plaintext( bill_version_id, bill_plaintext ):
+#  utils.write(
+#    bill_plaintext,
+#    plaintext_output_for( bill_version_id )
+#  )
+
+# Path to plaintext output.
+def plaintext_output_for( bill_version_id ):
+  bill_type, number, congress, version_code = utils.split_bill_version_id( bill_version_id )
+  return "%s/%s/bills/%s/%s%s/text-versions/%s/document.txt" % ( utils.data_dir(), congress, bill_type, bill_type, number, version_code )
+
 def proc_statute(path, options):
   mods = etree.parse(path + "/mods.xml")
   mods_ns = { "mods": "http://www.loc.gov/mods/v3" }
+
+  plaintext = options.get( "plaintext", False )
 
   # Load the THOMAS committee names for this Congress, which is our best
   # bet for normalizing committee names in the GPO data.
@@ -244,16 +278,26 @@ def proc_statute(path, options):
     # XXX: Can't use bill_versions.fetch_version() because it depends on fdsys.
     version_code = "enr"
     bill_version_id = "%s%s-%s-%s" % ( bill_type, bill_number, bill_congress, version_code )
+    bill_pdf_url = bill.find( "mods:location/mods:url[@displayLabel='PDF rendition']", mods_ns ).text
     bill_version = {
       'bill_version_id': bill_version_id,
       'version_code': version_code,
       'issued_on': status_date,
-      'urls': { "pdf": bill.find( "mods:location/mods:url[@displayLabel='PDF rendition']", mods_ns ).text },
+      'urls': { "pdf": bill_pdf_url },
     }
     import json, bill_versions
     utils.write(
       json.dumps(bill_version, sort_keys=True, indent=2, default=utils.format_datetime),
       bill_versions.output_for_bill_version(bill_version_id)
     )
+
+    if plaintext:
+      try:
+#        logging.debug( "Outputting plaintext file for %s" % bill_version_id )
+
+        output_bill_plaintext( bill_version_id, bill_pdf_url )
+      except OSError as e:
+        # If we don't have access to pdftotext, no sense wasting time.
+        plaintext = False
 
   return {'ok': True, 'saved': True}
